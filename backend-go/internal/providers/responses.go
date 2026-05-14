@@ -139,6 +139,7 @@ func (p *ResponsesProvider) buildProviderRequestBody(c *gin.Context, requestPath
 			sess = &session.Session{}
 		}
 
+		originalModel := responsesReq.Model
 		responsesReq.Model = config.RedirectModel(responsesReq.Model, upstream)
 		// Inject codex_tool_compat_enabled into TransformerMetadata for the converter.
 		if responsesReq.TransformerMetadata == nil {
@@ -150,6 +151,52 @@ func (p *ResponsesProvider) buildProviderRequestBody(c *gin.Context, requestPath
 		if err != nil {
 			return nil, nil, fmt.Errorf("convert request failed: %w", err)
 		}
+
+		// converter 路径：注入 reasoning/thinking 参数
+		if reqMap, ok := convertedReq.(map[string]interface{}); ok {
+			model := originalModel
+			if effort := config.ResolveReasoningEffort(model, upstream); effort != "" {
+				if upstream.ReasoningParamStyle == "thinking" {
+					delete(reqMap, "reasoning")
+					delete(reqMap, "reasoning_effort")
+					if effort != "none" {
+						reqMap["thinking"] = map[string]interface{}{"type": "enabled"}
+					}
+				} else if upstream.ReasoningParamStyle == "reasoning_effort" {
+					reqMap["reasoning_effort"] = effort
+				} else {
+					reqMap["reasoning"] = map[string]interface{}{"effort": effort}
+				}
+			} else {
+				// 无 ReasoningMapping 配置时，透传客户端原始 reasoning 并按 style 转换
+				var rawReq map[string]interface{}
+				if json.Unmarshal(bodyBytes, &rawReq) == nil {
+					if reasoning, hasReasoning := rawReq["reasoning"]; hasReasoning {
+						if upstream.ReasoningParamStyle == "thinking" {
+							delete(reqMap, "reasoning")
+							delete(reqMap, "reasoning_effort")
+							if effort := extractEffortFromReasoning(reasoning); effort != "" && effort != "none" {
+								reqMap["thinking"] = map[string]interface{}{"type": "enabled"}
+							}
+						} else if upstream.ReasoningParamStyle == "reasoning_effort" {
+							delete(reqMap, "reasoning")
+							if effort := extractEffortFromReasoning(reasoning); effort != "" {
+								reqMap["reasoning_effort"] = effort
+							}
+						} else {
+							reqMap["reasoning"] = reasoning
+						}
+					}
+				}
+			}
+			if upstream.TextVerbosity != "" {
+				reqMap["text"] = map[string]interface{}{"verbosity": upstream.TextVerbosity}
+			}
+			if upstream.FastMode {
+				reqMap["service_tier"] = "priority"
+			}
+		}
+
 		providerReq = convertedReq
 	}
 
@@ -1029,6 +1076,18 @@ func formatFunctionCallOutputHistory(item map[string]interface{}) string {
 		return fmt.Sprintf("Function call output (%s): %s", callID, output)
 	}
 	return fmt.Sprintf("Function call output: %s", output)
+}
+
+func extractEffortFromReasoning(reasoning interface{}) string {
+	switch v := reasoning.(type) {
+	case map[string]interface{}:
+		if effort, ok := v["effort"].(string); ok {
+			return effort
+		}
+	case string:
+		return v
+	}
+	return ""
 }
 
 func extractRawToolsFromRequest(bodyBytes []byte) []interface{} {

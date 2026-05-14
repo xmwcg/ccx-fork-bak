@@ -1,3 +1,9 @@
+## [Unreleased]
+
+### 修复
+
+- **修复 Responses 渠道 converter 路径未注入 thinking/reasoning 参数** - 当 Responses 渠道 serviceType 为 chat/openai/claude 时（走 converter 转换路径），`reasoningParamStyle` 配置不生效，转发到上游的请求体中缺少 thinking 或 reasoning 参数；现在 converter 路径也会根据配置正确注入，同时支持无 ReasoningMapping 时透传客户端原始 reasoning 并按 style 转换格式（Closes #59）
+
 ## [v2.6.92] - 2026-05-14
 
 ### 修复
