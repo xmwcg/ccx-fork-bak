@@ -30,6 +30,9 @@ export interface ChannelFormLike {
   codexToolCompat: boolean
   normalizeNonstandardChatRoles?: boolean
   stripCodexClientTools?: boolean
+  noVision: boolean
+  noVisionModels: string[]
+  visionFallbackModel: Record<string, string>
 
 }
 
@@ -72,6 +75,9 @@ export function buildChannelPayload(form: ChannelFormLike): Omit<Channel, 'index
     codexToolCompat: form.codexToolCompat,
     normalizeNonstandardChatRoles: !!form.normalizeNonstandardChatRoles,
     stripCodexClientTools: form.codexToolCompat,
+    noVision: form.noVision,
+    noVisionModels: form.noVisionModels,
+    visionFallbackModel: form.visionFallbackModel,
   }
 
   if (deduplicatedUrls.length > 1) {

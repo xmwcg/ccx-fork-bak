@@ -233,6 +233,15 @@ func (cm *ConfigManager) UpdateResponsesUpstream(index int, updates UpstreamUpda
 	if updates.RoutePrefix != nil {
 		upstream.RoutePrefix = *updates.RoutePrefix
 	}
+	if updates.NoVision != nil {
+		upstream.NoVision = *updates.NoVision
+	}
+	if updates.NoVisionModels != nil {
+		upstream.NoVisionModels = updates.NoVisionModels
+	}
+	if updates.VisionFallbackModel != nil {
+		upstream.VisionFallbackModel = updates.VisionFallbackModel
+	}
 
 	// 检测配置是否真的发生了变化
 	if !cm.hasConfigChanged(originalConfig, cm.config) {

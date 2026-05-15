@@ -148,6 +148,8 @@ import {
   mdiCalendar,
   mdiPaperclip,
   mdiEyedropper,
+  mdiEye,
+  mdiEyeOff,
   mdiShieldRefresh,
   mdiShieldOffOutline,
   mdiAlertCircleOutline,
@@ -222,6 +224,8 @@ const iconMap: Record<string, string> = {
   'treeviewCollapse': mdiMenuDown,
   'treeviewExpand': mdiMenuUp,
   'eyeDropper': mdiEyedropper,
+  'eye': mdiEye,
+  'eye-off': mdiEyeOff,
 
   // 布局与导航
   'swap-vertical-bold': mdiSwapVerticalBold,

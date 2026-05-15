@@ -223,6 +223,12 @@ export type MessageKey =
   | 'addChannel.injectDummyThoughtSignatureHint'
   | 'addChannel.stripThoughtSignatureLabel'
   | 'addChannel.stripThoughtSignatureHint'
+  | 'addChannel.noVisionLabel'
+  | 'addChannel.noVisionHint'
+  | 'addChannel.visionDisabled'
+  | 'addChannel.visionEnabled'
+  | 'addChannel.visionFallbackLabel'
+  | 'addChannel.visionFallbackPlaceholder'
   | 'addChannel.passbackReasoningContentLabel'
   | 'addChannel.passbackReasoningContentHint'
   | 'addChannel.customHeadersLabel'
@@ -284,6 +290,7 @@ export type MessageKey =
   | 'channelCard.tooltipHealthy'
   | 'channelCard.tooltipError'
   | 'channelCard.tooltipUnknown'
+  | 'channelCard.noVision'
   | 'channelLogs.title'
   | 'channelLogs.autoRefresh'
   | 'channelLogs.autoRefreshing'
@@ -615,6 +622,12 @@ export const messages: Record<SupportedLocale, Record<MessageKey, string>> = {
     'addChannel.injectDummyThoughtSignatureHint': 'Injects a dummy signature into functionCall for third-party APIs that require this field. Disable it for the official API.',
     'addChannel.stripThoughtSignatureLabel': 'Strip thought signature',
     'addChannel.stripThoughtSignatureHint': 'Removes thought_signature from functionCall for older Gemini APIs that do not support it.',
+    'addChannel.noVisionLabel': 'No vision support (entire channel)',
+    'addChannel.noVisionHint': 'When enabled, requests with images will skip this channel and failover to the next',
+    'addChannel.visionDisabled': 'This model does not support image input',
+    'addChannel.visionEnabled': 'This model supports image input',
+    'addChannel.visionFallbackLabel': 'Vision fallback model',
+    'addChannel.visionFallbackPlaceholder': 'Model to use when request contains images',
     'addChannel.passbackReasoningContentLabel': 'Passback reasoning content',
     'addChannel.passbackReasoningContentHint': 'Convert thinking blocks to reasoning_content when forwarding to Claude-protocol upstreams that require OpenAI-style reasoning_content (e.g. mimo).',
     'addChannel.customHeadersLabel': 'Custom headers (optional)',
@@ -676,6 +689,7 @@ export const messages: Record<SupportedLocale, Record<MessageKey, string>> = {
     'channelCard.tooltipHealthy': 'Connection is healthy: the latest check passed.',
     'channelCard.tooltipError': 'Connection error: check the Base URL, network, or API key.',
     'channelCard.tooltipUnknown': 'Not checked yet: click "Test latency" to run a check.',
+    'channelCard.noVision': 'This channel does not support image input',
     'channelLogs.title': 'Channel logs - {channel}',
     'channelLogs.autoRefresh': 'Auto refresh',
     'channelLogs.autoRefreshing': 'Auto refreshing',
@@ -1006,6 +1020,12 @@ export const messages: Record<SupportedLocale, Record<MessageKey, string>> = {
     'addChannel.injectDummyThoughtSignatureHint': 'Menyisipkan dummy signature ke functionCall agar kompatibel dengan API pihak ketiga yang membutuhkan field ini. Matikan untuk API resmi.',
     'addChannel.stripThoughtSignatureLabel': 'Hapus thought signature',
     'addChannel.stripThoughtSignatureHint': 'Menghapus thought_signature dari functionCall untuk Gemini API lama yang belum mendukung field tersebut.',
+    'addChannel.noVisionLabel': 'Tidak mendukung vision (seluruh channel)',
+    'addChannel.noVisionHint': 'Jika aktif, permintaan dengan gambar akan melewati channel ini dan failover ke channel berikutnya',
+    'addChannel.visionDisabled': 'Model ini tidak mendukung input gambar',
+    'addChannel.visionEnabled': 'Model ini mendukung input gambar',
+    'addChannel.visionFallbackLabel': 'Model fallback vision',
+    'addChannel.visionFallbackPlaceholder': 'Model yang digunakan saat permintaan mengandung gambar',
     'addChannel.passbackReasoningContentLabel': 'Teruskan reasoning content',
     'addChannel.passbackReasoningContentHint': 'Ubah thinking block menjadi reasoning_content saat diteruskan ke upstream protokol Claude yang mewajibkan reasoning_content ala OpenAI (misalnya mimo).',
     'addChannel.customHeadersLabel': 'Custom header (opsional)',
@@ -1067,6 +1087,7 @@ export const messages: Record<SupportedLocale, Record<MessageKey, string>> = {
     'channelCard.tooltipHealthy': 'Koneksi normal: pemeriksaan terakhir berhasil.',
     'channelCard.tooltipError': 'Koneksi bermasalah: periksa Base URL, jaringan, atau API key.',
     'channelCard.tooltipUnknown': 'Belum dicek: klik "Tes latensi" untuk memeriksa.',
+    'channelCard.noVision': 'Channel ini tidak mendukung input gambar',
     'channelLogs.title': 'Log channel - {channel}',
     'channelLogs.autoRefresh': 'Refresh otomatis',
     'channelLogs.autoRefreshing': 'Sedang auto refresh',
@@ -1397,6 +1418,12 @@ export const messages: Record<SupportedLocale, Record<MessageKey, string>> = {
     'addChannel.injectDummyThoughtSignatureHint': '为 functionCall 注入 dummy signature，兼容需要该字段的第三方 API（官方 API 请关闭）',
     'addChannel.stripThoughtSignatureLabel': '移除 Thought Signature',
     'addChannel.stripThoughtSignatureHint': '移除 functionCall 的 thought_signature 字段，兼容不支持该字段的旧版 Gemini API',
+    'addChannel.noVisionLabel': '不支持图片输入（整个渠道）',
+    'addChannel.noVisionHint': '启用后，包含图片的请求将跳过此渠道并 failover 到下一个渠道',
+    'addChannel.visionDisabled': '此模型不支持图片输入',
+    'addChannel.visionEnabled': '此模型支持图片输入',
+    'addChannel.visionFallbackLabel': '视觉回退模型',
+    'addChannel.visionFallbackPlaceholder': '含图请求时使用的替代模型',
     'addChannel.passbackReasoningContentLabel': '回传 Reasoning Content',
     'addChannel.passbackReasoningContentHint': '将 thinking 块转为 reasoning_content 回传，兼容 mimo 等要求 OpenAI 风格 reasoning_content 的 Claude 协议上游',
     'addChannel.customHeadersLabel': '自定义请求头 (可选)',
@@ -1457,7 +1484,8 @@ export const messages: Record<SupportedLocale, Record<MessageKey, string>> = {
     'channelCard.statusError': '错误',
     'channelCard.tooltipHealthy': '连接正常：最近一次检测通过',
     'channelCard.tooltipError': '连接异常：请检查基础 URL、网络或 API 密钥',
-    'channelCard.tooltipUnknown': '尚未检测：请点击“测试延迟”进行检测',
+    'channelCard.tooltipUnknown': '尚未检测：请点击”测试延迟”进行检测',
+    'channelCard.noVision': '此渠道不支持图片输入',
     'channelLogs.title': '渠道日志 - {channel}',
     'channelLogs.autoRefresh': '自动刷新',
     'channelLogs.autoRefreshing': '自动刷新中',

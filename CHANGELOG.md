@@ -1,3 +1,9 @@
+## [Unreleased]
+
+### 新增
+
+- **Vision 能力路由** - 支持根据请求是否包含图片内容动态跳过不支持 vision 的渠道/模型；渠道级 `noVision` 标记整渠道不支持图片输入，`noVisionModels` 标记特定模型不支持，`visionFallbackModel` 支持同渠道内模型降级；前端 AddChannelModal 模型映射行增加眼睛图标 toggle 和可选 fallback 输入，ChannelCard 显示 noVision 指示器
+
 ## [v2.6.94] - 2026-05-14
 
 ### 修复

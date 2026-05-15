@@ -28,7 +28,10 @@ describe('buildChannelPayload', () => {
       autoBlacklistBalance: true,
       normalizeMetadataUserId: true,
       codexNativeToolPassthrough: false,
-      codexToolCompat: true
+      codexToolCompat: true,
+      noVision: false,
+      noVisionModels: [],
+      visionFallbackModel: {}
     })
 
     expect(result.name).toBe('test-channel')
@@ -70,7 +73,10 @@ describe('buildChannelPayload', () => {
       autoBlacklistBalance: true,
       normalizeMetadataUserId: true,
       codexNativeToolPassthrough: false,
-      codexToolCompat: true
+      codexToolCompat: true,
+      noVision: false,
+      noVisionModels: [],
+      visionFallbackModel: {}
     })
 
     expect(result.baseUrl).toBe('https://api.example.com')
@@ -107,7 +113,10 @@ describe('buildChannelPayload', () => {
       autoBlacklistBalance: true,
       normalizeMetadataUserId: true,
       codexNativeToolPassthrough: false,
-      codexToolCompat: true
+      codexToolCompat: true,
+      noVision: false,
+      noVisionModels: [],
+      visionFallbackModel: {}
     })
 
     expect(result.baseUrl).toBe('https://new.timefiles.online')
@@ -140,7 +149,10 @@ describe('buildChannelPayload', () => {
       autoBlacklistBalance: true,
       normalizeMetadataUserId: true,
       codexNativeToolPassthrough: false,
-      codexToolCompat: true
+      codexToolCompat: true,
+      noVision: false,
+      noVisionModels: [],
+      visionFallbackModel: {}
     })
 
     expect(result.baseUrl).toBe('https://new.timefiles.online')
@@ -173,7 +185,10 @@ describe('buildChannelPayload', () => {
       autoBlacklistBalance: true,
       normalizeMetadataUserId: true,
       codexNativeToolPassthrough: false,
-      codexToolCompat: true
+      codexToolCompat: true,
+      noVision: false,
+      noVisionModels: [],
+      visionFallbackModel: {}
     })
 
     expect(result.modelMapping).toEqual({ opus: 'claude-3-7-sonnet' })
@@ -209,7 +224,10 @@ describe('buildChannelPayload', () => {
       autoBlacklistBalance: false,
       normalizeMetadataUserId: true,
       codexNativeToolPassthrough: false,
-      codexToolCompat: true
+      codexToolCompat: true,
+      noVision: false,
+      noVisionModels: [],
+      visionFallbackModel: {}
     })
 
     expect(result.autoBlacklistBalance).toBe(false)
@@ -241,7 +259,10 @@ describe('buildChannelPayload', () => {
       autoBlacklistBalance: true,
       normalizeMetadataUserId: false,
       codexNativeToolPassthrough: false,
-      codexToolCompat: true
+      codexToolCompat: true,
+      noVision: false,
+      noVisionModels: [],
+      visionFallbackModel: {}
     })
 
     expect(result.normalizeMetadataUserId).toBe(false)
@@ -274,7 +295,10 @@ describe('buildChannelPayload', () => {
       normalizeMetadataUserId: true,
       codexNativeToolPassthrough: false,
       codexToolCompat: true,
-      normalizeNonstandardChatRoles: true
+      normalizeNonstandardChatRoles: true,
+      noVision: false,
+      noVisionModels: [],
+      visionFallbackModel: {}
     })
 
     expect(result.normalizeNonstandardChatRoles).toBe(true)

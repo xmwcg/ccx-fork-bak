@@ -253,9 +253,8 @@
                   <!-- 现有映射列表 -->
                   <div v-if="Object.keys(form.modelMapping).length" class="mb-4">
                     <v-list density="compact" class="bg-transparent">
+                      <template v-for="[source, target] in Object.entries(form.modelMapping)" :key="source">
                       <v-list-item
-                        v-for="[source, target] in Object.entries(form.modelMapping)"
-                        :key="source"
                         class="mb-2"
                         rounded="lg"
                         variant="tonal"
@@ -282,11 +281,41 @@
                         </v-list-item-title>
 
                         <template #append>
-                          <v-btn size="small" color="error" icon variant="text" @click="removeModelMapping(source)">
-                            <v-icon size="small" color="error">mdi-close</v-icon>
-                          </v-btn>
+                          <div class="d-flex align-center ga-1">
+                            <v-tooltip :text="isModelNoVision(target) ? t('addChannel.visionDisabled') : t('addChannel.visionEnabled')" location="top">
+                              <template #activator="{ props: tip }">
+                                <v-btn
+                                  v-bind="tip"
+                                  size="small"
+                                  :color="isModelNoVision(target) ? 'warning' : 'grey'"
+                                  icon
+                                  variant="text"
+                                  @click="toggleModelVision(target)"
+                                >
+                                  <v-icon size="small">{{ isModelNoVision(target) ? 'mdi-eye-off' : 'mdi-eye' }}</v-icon>
+                                </v-btn>
+                              </template>
+                            </v-tooltip>
+                            <v-btn size="small" color="error" icon variant="text" @click="removeModelMapping(source)">
+                              <v-icon size="small" color="error">mdi-close</v-icon>
+                            </v-btn>
+                          </div>
                         </template>
                       </v-list-item>
+                      <!-- Vision fallback 输入（当模型标记为不支持视觉时显示） -->
+                      <v-text-field
+                        v-if="isModelNoVision(target)"
+                        v-model="form.visionFallbackModel[target]"
+                        :label="t('addChannel.visionFallbackLabel')"
+                        :placeholder="t('addChannel.visionFallbackPlaceholder')"
+                        variant="outlined"
+                        density="compact"
+                        hide-details
+                        class="ml-10 mb-2"
+                        style="max-width: 320px"
+                        clearable
+                      />
+                      </template>
                     </v-list>
                   </div>
 
@@ -675,6 +704,20 @@
                   </div>
                 </div>
                 <v-switch v-model="form.insecureSkipVerify" inset color="warning" hide-details />
+              </div>
+            </v-col>
+
+            <!-- 不支持视觉（整渠道） -->
+            <v-col cols="12">
+              <div class="d-flex align-center justify-space-between">
+                <div class="d-flex align-center ga-2">
+                  <v-icon color="warning">mdi-eye-off</v-icon>
+                  <div>
+                    <div class="section-title section-title--soft">{{ t('addChannel.noVisionLabel') }}</div>
+                    <div class="text-caption text-medium-emphasis">{{ t('addChannel.noVisionHint') }}</div>
+                  </div>
+                </div>
+                <v-switch v-model="form.noVision" inset color="warning" hide-details />
               </div>
             </v-col>
 
@@ -1646,6 +1689,9 @@ const form = reactive({
   codexToolCompat: false,
   normalizeNonstandardChatRoles: false,
   stripCodexClientTools: false,
+  noVision: false,
+  noVisionModels: [] as string[],
+  visionFallbackModel: {} as Record<string, string>,
 })
 
 // 多 BaseURL 文本输入（独立变量，保留用户输入的换行）
@@ -1961,6 +2007,9 @@ const hasEditableDraftChanges = computed(() => {
     codexToolCompat: props.channel.codexToolCompat ?? props.channel.stripCodexClientTools ?? false,
     normalizeNonstandardChatRoles: !!props.channel.normalizeNonstandardChatRoles,
     stripCodexClientTools: props.channel.codexToolCompat ?? props.channel.stripCodexClientTools ?? false,
+    noVision: !!props.channel.noVision,
+    noVisionModels: [...(props.channel.noVisionModels || [])],
+    visionFallbackModel: { ...(props.channel.visionFallbackModel || {}) },
   }
 
   return JSON.stringify(currentPayload) !== JSON.stringify(originalPayload)
@@ -2033,6 +2082,9 @@ const resetForm = () => {
   form.codexToolCompat = false
   form.normalizeNonstandardChatRoles = false
   form.stripCodexClientTools = false
+  form.noVision = false
+  form.noVisionModels = []
+  form.visionFallbackModel = {}
 
   // 重置 baseUrlsText
   baseUrlsText.value = ''
@@ -2099,6 +2151,9 @@ const loadChannelData = (channel: Channel) => {
   form.codexToolCompat = channel.codexToolCompat ?? channel.stripCodexClientTools ?? false
   form.normalizeNonstandardChatRoles = !!channel.normalizeNonstandardChatRoles
   form.stripCodexClientTools = channel.codexToolCompat ?? channel.stripCodexClientTools ?? false
+  form.noVision = !!channel.noVision
+  form.noVisionModels = [...(channel.noVisionModels || [])]
+  form.visionFallbackModel = { ...(channel.visionFallbackModel || {}) }
 
   // 立即同步 baseUrl 到预览变量，避免等待 debounce
   formBaseUrlPreview.value = channel.baseUrl
@@ -2282,8 +2337,29 @@ const addModelMapping = () => {
 }
 
 const removeModelMapping = (source: string) => {
+  const target = form.modelMapping[source]
   delete form.modelMapping[source]
   delete form.reasoningMapping[source]
+  // 清理 vision 相关数据
+  if (target) {
+    const idx = form.noVisionModels.indexOf(target)
+    if (idx >= 0) form.noVisionModels.splice(idx, 1)
+    delete form.visionFallbackModel[target]
+  }
+}
+
+const isModelNoVision = (model: string): boolean => {
+  return form.noVisionModels.includes(model)
+}
+
+const toggleModelVision = (model: string) => {
+  const idx = form.noVisionModels.indexOf(model)
+  if (idx >= 0) {
+    form.noVisionModels.splice(idx, 1)
+    delete form.visionFallbackModel[model]
+  } else {
+    form.noVisionModels.push(model)
+  }
 }
 
 const isSupportedModelSelected = (filter: string): boolean => {

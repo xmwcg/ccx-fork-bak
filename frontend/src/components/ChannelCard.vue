@@ -65,6 +65,12 @@
           >
             <span class="font-weight-bold">{{ channel.serviceType.toUpperCase() }}</span>
           </v-chip>
+          <!-- Vision 不支持指示器 -->
+          <v-tooltip v-if="channel.noVision" location="top" :text="t('channelCard.noVision')">
+            <template #activator="{ props: tip }">
+              <v-icon v-bind="tip" size="14" color="warning">mdi-eye-off</v-icon>
+            </template>
+          </v-tooltip>
           <!-- 渠道状态芯片 -->
           <v-chip
             v-if="channel.status === 'disabled'"

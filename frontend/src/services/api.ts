@@ -137,6 +137,9 @@ export interface Channel {
   stripThoughtSignature?: boolean        // Gemini 特定：移除 thought_signature 字段（兼容旧版 Gemini API）
   passbackReasoningContent?: boolean     // Claude 协议特定：将 thinking 块转为 reasoning_content 回传（兼容 mimo 等上游）
   supportedModels?: string[]  // 支持的模型白名单（空=全部），支持通配符如 gpt-4*
+  noVision?: boolean                       // 整个渠道不支持图片输入
+  noVisionModels?: string[]                // 不支持图片输入的模型列表（匹配 modelMapping 后的实际模型名）
+  visionFallbackModel?: Record<string, string> // 含图请求的模型降级映射
   rpm?: number                // 能力测试发送速率（仅影响能力测试）
 }
 

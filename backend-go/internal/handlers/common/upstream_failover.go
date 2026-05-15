@@ -17,6 +17,7 @@ import (
 	"github.com/BenedictKing/ccx/internal/utils"
 	"github.com/BenedictKing/ccx/internal/warmup"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/sjson"
 )
 
 // isClientSideError 判断错误是否由客户端明确取消（不应计入渠道失败）
@@ -115,6 +116,27 @@ func TryUpstreamWithAllKeys(
 	var originalModel string
 	if redirectedModel != model {
 		originalModel = model // 仅当发生重定向时记录原始模型
+	}
+
+	// Vision 能力检查：含图请求跳过不支持 vision 的渠道/模型
+	if kind != scheduler.ChannelKindImages && HasImageContent(c, requestBody) {
+		if upstream.NoVision {
+			log.Printf("[%s-Vision] 跳过不支持视觉的渠道 [%d] %s", apiType, channelIndex, upstream.Name)
+			return false, "", 0, nil, nil, fmt.Errorf("channel %s does not support vision", upstream.Name)
+		}
+		if isNoVisionModel(upstream, redirectedModel) {
+			if fallback, ok := upstream.VisionFallbackModel[redirectedModel]; ok && fallback != "" {
+				log.Printf("[%s-Vision] 模型 %s 不支持视觉，使用 fallback: %s (渠道 [%d] %s)", apiType, redirectedModel, fallback, channelIndex, upstream.Name)
+				if replaced, err := sjson.SetBytes(requestBody, "model", fallback); err == nil {
+					requestBody = replaced
+				}
+				originalModel = model
+				redirectedModel = fallback
+			} else {
+				log.Printf("[%s-Vision] 模型 %s 不支持视觉且无 fallback，跳过渠道 [%d] %s", apiType, redirectedModel, channelIndex, upstream.Name)
+				return false, "", 0, nil, nil, fmt.Errorf("model %s does not support vision", redirectedModel)
+			}
+		}
 	}
 
 	for urlIdx, urlResult := range urlResults {

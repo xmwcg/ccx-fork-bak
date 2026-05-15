@@ -62,6 +62,10 @@ type UpstreamConfig struct {
 	SupportedModels []string `json:"supportedModels,omitempty"` // 支持的模型白名单（空=全部）；支持精确匹配，以及 prefix* / *suffix / *contains* 形式的包含与排除规则（排除用 ! 前缀）
 	// 路由前缀
 	RoutePrefix string `json:"routePrefix,omitempty"` // 路由前缀（如 "kimi"），客户端可通过 /:routePrefix/v1/messages 访问
+	// Vision 能力配置
+	NoVision            bool              `json:"noVision,omitempty"`            // 整个渠道不支持图片输入
+	NoVisionModels      []string          `json:"noVisionModels,omitempty"`      // 不支持图片输入的模型列表（匹配 modelMapping 后的实际模型名）
+	VisionFallbackModel map[string]string `json:"visionFallbackModel,omitempty"` // 含图请求的模型降级映射（key=不支持vision的模型, value=替代模型）
 }
 
 // DisabledKeyInfo 被拉黑的 API Key 信息
@@ -146,6 +150,10 @@ type UpstreamUpdate struct {
 	SupportedModels []string `json:"supportedModels"` // 支持的模型白名单（空=全部）；支持精确匹配，以及 prefix* / *suffix / *contains* 形式的包含与排除规则（排除用 ! 前缀）
 	// 路由前缀
 	RoutePrefix *string `json:"routePrefix"` // 路由前缀（如 "kimi"）
+	// Vision 能力配置
+	NoVision            *bool             `json:"noVision"`
+	NoVisionModels      []string          `json:"noVisionModels"`
+	VisionFallbackModel map[string]string `json:"visionFallbackModel"`
 }
 
 // Config 配置结构
