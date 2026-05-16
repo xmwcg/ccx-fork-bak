@@ -184,6 +184,7 @@ import {
   mdiAccountSwitch,
   mdiChatOutline,
   mdiDragHorizontalVariant,
+  mdiUpdate,
 } from '@mdi/js'
 
 // 图标名称到 SVG path 的映射 (使用 kebab-case)
@@ -379,6 +380,7 @@ const iconMap: Record<string, string> = {
   'account-switch': mdiAccountSwitch,
   'chat-outline': mdiChatOutline,
   'drag-horizontal-variant': mdiDragHorizontalVariant,
+  'update': mdiUpdate,
 }
 
 // 自定义 SVG iconset - 处理 mdi-xxx 字符串格式
