@@ -3,12 +3,12 @@
     <!-- 过滤栏 -->
     <div class="d-flex align-center mb-4 flex-wrap ga-2">
       <v-chip-group v-model="kindFilter" mandatory selected-class="text-primary">
-        <v-chip value="" variant="tonal" size="small" filter>All</v-chip>
-        <v-chip value="messages" variant="tonal" size="small" color="purple" filter>Messages</v-chip>
-        <v-chip value="chat" variant="tonal" size="small" color="blue" filter>Chat</v-chip>
-        <v-chip value="images" variant="tonal" size="small" color="pink" filter>Images</v-chip>
-        <v-chip value="responses" variant="tonal" size="small" color="teal" filter>Responses</v-chip>
-        <v-chip value="gemini" variant="tonal" size="small" color="orange" filter>Gemini</v-chip>
+        <v-chip value="" variant="outlined" size="small" class="filter-chip" filter>ALL</v-chip>
+        <v-chip value="messages" variant="outlined" size="small" color="purple" class="filter-chip" filter>MESSAGES</v-chip>
+        <v-chip value="chat" variant="outlined" size="small" color="blue" class="filter-chip" filter>CHAT</v-chip>
+        <v-chip value="images" variant="outlined" size="small" color="pink" class="filter-chip" filter>IMAGES</v-chip>
+        <v-chip value="responses" variant="outlined" size="small" color="teal" class="filter-chip" filter>RESPONSES</v-chip>
+        <v-chip value="gemini" variant="outlined" size="small" color="orange" class="filter-chip" filter>GEMINI</v-chip>
       </v-chip-group>
       <v-spacer />
       <span class="text-caption text-medium-emphasis">
@@ -61,17 +61,40 @@ const conversations = ref<ConversationInfo[]>([])
 const overrides = ref<Record<string, SequenceOverrideInfo>>({})
 const kindFilter = ref('')
 const expandedCards = ref(new Set<string>())
-const channelsByKind = ref<Record<string, { index: number; name: string; status: string }[]>>({})
+type DashboardChannel = { index: number; name: string; priority: number; status: string }
+
+const channelsByKind = ref<Record<string, DashboardChannel[]>>({})
+
+function normalizeChannel(ch: any): DashboardChannel {
+  const index = ch.index ?? ch.Index ?? 0
+  return {
+    index,
+    name: ch.name ?? ch.Name ?? `Channel ${index}`,
+    priority: ch.priority ?? ch.Priority ?? index,
+    status: ch.status ?? ch.Status ?? 'active',
+  }
+}
+
+function normalizeChannelsByKind(value: Record<string, any[]>): Record<string, DashboardChannel[]> {
+  return Object.fromEntries(
+    Object.entries(value).map(([kind, channels]) => [
+      kind,
+      (channels || [])
+        .map(normalizeChannel)
+        .sort((a, b) => (a.priority - b.priority) || (a.index - b.index)),
+    ]),
+  )
+}
 
 const filteredConversations = computed(() => {
   const filter = kindFilter.value
-  if (!filter) return conversations.value
-  return conversations.value.filter(c => c.kind === filter)
+  const items = filter ? conversations.value.filter(c => c.kind === filter) : conversations.value
+  return [...items].sort((a, b) => new Date(b.lastActiveAt).getTime() - new Date(a.lastActiveAt).getTime())
 })
 
 const overrideCount = computed(() => Object.keys(overrides.value).length)
 
-function getChannelsForKind(kind: string): { index: number; name: string; status: string }[] {
+function getChannelsForKind(kind: string): DashboardChannel[] {
   return channelsByKind.value[kind] || []
 }
 
@@ -80,16 +103,14 @@ async function fetchAllChannels() {
   for (const kind of kinds) {
     try {
       const dashboard = await api.getChannelDashboard(kind)
-      channelsByKind.value[kind] = (dashboard.channels || [])
-        .filter((ch: any) => ch.status !== 'disabled')
-        .map((ch: any) => ({
-          index: ch.index ?? 0,
-          name: ch.name || `Channel ${ch.index}`,
-          status: ch.status || 'active',
-          priority: ch.priority ?? ch.index ?? 0,
-        }))
-        .sort((a: any, b: any) => (a.priority - b.priority) || (a.index - b.index))
-    } catch { /* ignore */ }
+      if (!channelsByKind.value[kind]?.length) {
+        channelsByKind.value[kind] = (dashboard.channels || [])
+          .map(normalizeChannel)
+          .sort((a, b) => (a.priority - b.priority) || (a.index - b.index))
+      }
+    } catch (e) {
+      console.error(`[ConversationDashboard] fetch ${kind} channels error:`, e)
+    }
   }
 }
 
@@ -98,6 +119,9 @@ async function fetchConversations() {
     const resp = await api.getConversations(kindFilter.value || undefined)
     conversations.value = resp.conversations || []
     overrides.value = resp.overrides || {}
+    if (resp.channelsByKind) {
+      channelsByKind.value = normalizeChannelsByKind(resp.channelsByKind)
+    }
   } catch (e) {
     console.error('[ConversationDashboard] fetch error:', e)
   } finally {
@@ -144,5 +168,11 @@ fetchAllChannels()
 .conversation-dashboard {
   max-width: 1400px;
   margin: 0 auto;
+}
+.filter-chip {
+  border-radius: 0 !important;
+  font-size: 10px !important;
+  font-weight: 700;
+  letter-spacing: 0.06em;
 }
 </style>

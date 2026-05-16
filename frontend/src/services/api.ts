@@ -1515,6 +1515,7 @@ export interface ConversationsResponse {
   conversations: ConversationInfo[]
   total: number
   overrides: Record<string, SequenceOverrideInfo>
+  channelsByKind?: Record<string, { index: number; name: string; priority: number; status: string }[]>
 }
 
 // 健康检查响应类型
