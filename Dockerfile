@@ -6,6 +6,11 @@ FROM golang:1.25-alpine AS builder
 
 # 声明 VERSION 构建参数（用于 CI 传入版本号，留空则从 VERSION 文件读取）
 ARG VERSION
+# TARGETARCH 由 BuildKit 自动注入（amd64/arm64），用于 Go 交叉编译，避免在 QEMU 下运行编译器
+ARG TARGETARCH
+ENV GOOS=linux
+ENV GOARCH=${TARGETARCH}
+ENV CGO_ENABLED=0
 
 WORKDIR /src
 
