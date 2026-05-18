@@ -459,7 +459,7 @@ func (s *ChannelScheduler) SelectChannel(
 				for _, ch := range activeChannels {
 					if ch.Index == entry.ChannelIndex && ch.Status == "active" {
 						upstream := s.getUpstreamByIndex(entry.ChannelIndex, kind)
-						if upstream != nil && s.channelIsHealthy(upstream, kind) {
+						if upstream != nil && s.channelCircuitState(upstream, kind) != metrics.CircuitStateOpen {
 							log.Printf("[%s-Override] 手动覆盖选择渠道: [%d] %s (user: %s)", prefix, entry.ChannelIndex, entry.ChannelName, maskUserID(userID))
 							return &SelectionResult{
 								Upstream:     upstream,
@@ -1057,7 +1057,7 @@ func (s *ChannelScheduler) GetConversationChannelsByKind(kind ChannelKind) []Cha
 	for i := range channels {
 		upstream := s.getUpstreamByIndex(channels[i].Index, kind)
 		if upstream != nil {
-			channels[i].CircuitOpen = !s.channelIsHealthy(upstream, kind)
+			channels[i].CircuitOpen = s.channelCircuitState(upstream, kind) == metrics.CircuitStateOpen
 		}
 	}
 	return channels
