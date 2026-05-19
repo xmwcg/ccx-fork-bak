@@ -17,6 +17,11 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+func init() {
+	application.RegisterEvent[string]("desktop:show-tab")
+	application.RegisterEvent[string]("desktop:tray-error")
+}
+
 func main() {
 	manager := backend.NewManager(backend.Options{})
 	desktopService := NewDesktopService(manager)

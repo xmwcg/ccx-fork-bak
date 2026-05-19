@@ -111,8 +111,10 @@ const showStatusTab = async () => {
 onMounted(async () => {
   await syncStatus()
   statusInterval = window.setInterval(syncStatus, 3000)
-  unsubscribeTab = Events.On('desktop:show-tab', (event: { data: 'status' | 'web' }) => {
-    activeTab.value = event.data
+  unsubscribeTab = Events.On('desktop:show-tab', (event: { data: string }) => {
+    if (event.data === 'status' || event.data === 'web') {
+      activeTab.value = event.data
+    }
   })
   unsubscribeTrayError = Events.On('desktop:tray-error', (event: { data: string }) => {
     actionError.value = event.data
