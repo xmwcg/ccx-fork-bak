@@ -2,6 +2,7 @@
 package common
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 
@@ -33,7 +34,9 @@ func IsClaudeResponseEmpty(resp *types.ClaudeResponse) bool {
 			if !IsEffectivelyEmptyStreamText(block.Text) {
 				return false
 			}
-		case "tool_use", "server_tool_use", "thinking", "redacted_thinking":
+		case "tool_use", "server_tool_use":
+			return isMalformedNamedToolArguments(block.Name, block.Input)
+		case "thinking", "redacted_thinking":
 			return false
 		default:
 			// 其他非文本块（image / document 等）视为有效内容
@@ -102,9 +105,27 @@ func isChatMessageEmpty(msg map[string]interface{}) bool {
 		}
 	}
 
-	// 2. tool_calls 非空即视为有效
+	// 2. tool_calls 非空且参数有效即视为有效
 	if calls, ok := msg["tool_calls"].([]interface{}); ok && len(calls) > 0 {
-		return false
+		allMalformed := true
+		for _, call := range calls {
+			callMap, ok := call.(map[string]interface{})
+			if !ok {
+				allMalformed = false
+				continue
+			}
+			function, _ := callMap["function"].(map[string]interface{})
+			args := callMap["arguments"]
+			name, _ := callMap["name"].(string)
+			if function != nil {
+				args = function["arguments"]
+				name, _ = function["name"].(string)
+			}
+			if !isMalformedNamedToolArguments(name, args) {
+				allMalformed = false
+			}
+		}
+		return allMalformed
 	}
 
 	// 3. reasoning_content / refusal 非空也视为有效
@@ -139,11 +160,18 @@ func IsResponsesResponseEmpty(resp *types.ResponsesResponse) bool {
 func isResponsesItemEmpty(item types.ResponsesItem) bool {
 	itemType := item.Type
 	switch itemType {
-	case "function_call", "reasoning":
+	case "function_call":
+		return isMalformedNamedToolArguments(item.Name, firstNonEmptyString(item.Arguments, item.Input))
+	case "custom_tool_call":
+		return strings.TrimSpace(item.Input) == ""
+	case "reasoning":
 		return false
 	}
 	if strings.HasSuffix(itemType, "_call") {
-		return false
+		if strings.TrimSpace(item.Input) != "" && strings.TrimSpace(item.Arguments) == "" {
+			return false
+		}
+		return isMalformedNamedToolArguments(item.Name, firstNonEmptyString(item.Arguments, item.Input))
 	}
 	// message / text 类：检查 content
 	switch v := item.Content.(type) {
@@ -222,7 +250,7 @@ func IsGeminiResponseEmpty(resp *types.GeminiResponse) bool {
 				return false
 			}
 			if part.FunctionCall != nil {
-				return false
+				return len(part.FunctionCall.Args) == 0 && toolRequiresArguments(part.FunctionCall.Name)
 			}
 			if part.InlineData != nil || part.FileData != nil {
 				return false
@@ -230,4 +258,65 @@ func IsGeminiResponseEmpty(resp *types.GeminiResponse) bool {
 		}
 	}
 	return true
+}
+
+// IsMalformedToolArguments 判断工具调用参数是否为空对象、空字符串或非法 JSON。
+func IsMalformedToolArguments(args interface{}) bool {
+	return isMalformedToolArguments("", args)
+}
+
+func isMalformedNamedToolArguments(name string, args interface{}) bool {
+	return isMalformedToolArguments(name, args)
+}
+
+func isMalformedToolArguments(name string, args interface{}) bool {
+	if args == nil {
+		return toolRequiresArguments(name)
+	}
+
+	switch v := args.(type) {
+	case string:
+		trimmed := strings.TrimSpace(v)
+		if trimmed == "" || trimmed == "{}" {
+			return toolRequiresArguments(name)
+		}
+		var parsed interface{}
+		if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
+			return true
+		}
+		return parsedJSONEmptyObject(parsed) && toolRequiresArguments(name)
+	case map[string]interface{}:
+		return len(v) == 0 && toolRequiresArguments(name)
+	case []interface{}:
+		return len(v) == 0 && toolRequiresArguments(name)
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return true
+		}
+		return isMalformedToolArguments(name, string(b))
+	}
+}
+
+func toolRequiresArguments(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "read", "edit", "write", "bash", "grep", "glob", "webfetch", "websearch", "agent", "taskcreate", "taskupdate", "taskget", "taskoutput", "taskstop", "notebookedit", "askuserquestion", "sendmessage", "skill", "croncreate", "crondelete", "enterworktree", "exitworktree", "mcp__serena__read_memory", "mcp__serena__write_memory", "mcp__serena__find_symbol", "mcp__serena__replace_content":
+		return true
+	default:
+		return false
+	}
+}
+
+func parsedJSONEmptyObject(v interface{}) bool {
+	m, ok := v.(map[string]interface{})
+	return ok && len(m) == 0
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }

@@ -40,14 +40,25 @@ func (e *ErrBlacklistKey) Error() string {
 
 // StreamPreflightResult 流式预检测结果
 type StreamPreflightResult struct {
-	BufferedEvents   []string // 缓冲的事件（需要回放）
-	IsEmpty          bool     // 是否为空响应
-	HasError         bool     // 是否有流错误
-	Error            error    // 流错误
-	BlacklistReason  string   // 拉黑原因（非空时应拉黑 Key）
-	BlacklistMessage string   // 拉黑错误信息
-	Diagnostic       string   // 空响应诊断摘要
-	UnknownEventType string   // 首个未知 SSE data.type
+	BufferedEvents        []string // 缓冲的事件（需要回放）
+	IsEmpty               bool     // 是否为空响应
+	HasError              bool     // 是否有流错误
+	Error                 error    // 流错误
+	BlacklistReason       string   // 拉黑原因（非空时应拉黑 Key）
+	BlacklistMessage      string   // 拉黑错误信息
+	Diagnostic            string   // 空响应诊断摘要
+	UnknownEventType      string   // 首个未知 SSE data.type
+	MalformedToolCall     bool     // 是否检测到空或畸形工具调用
+	MalformedToolCallName string   // 畸形工具调用名称
+}
+
+type StreamToolCallTracker struct {
+	active map[int]*StreamToolCallState
+}
+
+type StreamToolCallState struct {
+	Name      string
+	Arguments strings.Builder
 }
 
 // PreflightStreamEvents 在发送 HTTP Header 之前预检测流式响应是否为空
@@ -56,6 +67,7 @@ func PreflightStreamEvents(eventChan <-chan string, errChan <-chan error) *Strea
 	result := &StreamPreflightResult{}
 	var textBuf bytes.Buffer
 	var thinkingBuf bytes.Buffer
+	toolTracker := NewStreamToolCallTracker()
 	hasNonTextContent := false // tool_use / server_tool_use 等非文本语义内容
 	seenEvent := false
 	seenMessageStop := false
@@ -89,8 +101,16 @@ func PreflightStreamEvents(eventChan <-chan string, errChan <-chan error) *Strea
 				}
 			}
 
-			// 检测非文本 content block（tool_use / thinking）
-			if !hasNonTextContent && hasNonTextContentBlock(event) {
+			if malformed, name := toolTracker.ProcessClaudeEvent(event); malformed {
+				result.IsEmpty = true
+				result.MalformedToolCall = true
+				result.MalformedToolCallName = name
+				result.Diagnostic = fmt.Sprintf("malformed tool call: %s", name)
+				return result
+			}
+
+			// 检测非文本 content block（tool_use / thinking）。tool_use 需等参数完整后再放行。
+			if !hasNonTextContent && hasNonTextContentBlock(event) && !toolTracker.HasPendingToolCall() {
 				hasNonTextContent = true
 				return result // 有效内容，立即放行
 			}
@@ -162,6 +182,230 @@ func buildClaudePreflightDiagnostic(seenEvent, seenMessageStop, seenUsageOnlyEve
 	default:
 		return "检测到空流，但未匹配到明确类别"
 	}
+}
+
+func NewStreamToolCallTracker() *StreamToolCallTracker {
+	return &StreamToolCallTracker{active: make(map[int]*StreamToolCallState)}
+}
+
+func (t *StreamToolCallTracker) HasPendingToolCall() bool {
+	return len(t.active) > 0
+}
+
+func (t *StreamToolCallTracker) ProcessClaudeEvent(event string) (bool, string) {
+	for _, line := range strings.Split(event, "\n") {
+		jsonStr, ok := extractSSEJSONLine(line)
+		if !ok {
+			continue
+		}
+
+		var data map[string]interface{}
+		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
+			continue
+		}
+
+		eventType, _ := data["type"].(string)
+		index := 0
+		if idx, ok := data["index"].(float64); ok {
+			index = int(idx)
+		}
+
+		switch eventType {
+		case "content_block_start":
+			contentBlock, _ := data["content_block"].(map[string]interface{})
+			blockType, _ := contentBlock["type"].(string)
+			if blockType != "tool_use" && blockType != "server_tool_use" {
+				continue
+			}
+			state := &StreamToolCallState{}
+			if name, ok := contentBlock["name"].(string); ok {
+				state.Name = name
+			}
+			if input, exists := contentBlock["input"]; exists && !IsMalformedToolArguments(input) {
+				if b, err := json.Marshal(input); err == nil {
+					state.Arguments.Write(b)
+				}
+			}
+			t.active[index] = state
+		case "content_block_delta":
+			delta, _ := data["delta"].(map[string]interface{})
+			if partial, ok := delta["partial_json"].(string); ok {
+				state := t.active[index]
+				if state == nil {
+					state = &StreamToolCallState{}
+					t.active[index] = state
+				}
+				state.Arguments.WriteString(partial)
+			}
+		case "content_block_stop":
+			state := t.active[index]
+			if state == nil {
+				continue
+			}
+			delete(t.active, index)
+			if isMalformedNamedToolArguments(state.Name, state.Arguments.String()) {
+				name := state.Name
+				if name == "" {
+					name = "unknown_tool"
+				}
+				return true, name
+			}
+		}
+	}
+	return false, ""
+}
+
+func (t *StreamToolCallTracker) ProcessResponsesEvent(event string) (bool, string) {
+	for _, line := range strings.Split(event, "\n") {
+		jsonStr, ok := extractSSEJSONLine(line)
+		if !ok {
+			continue
+		}
+
+		var data map[string]interface{}
+		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
+			continue
+		}
+
+		eventType, _ := data["type"].(string)
+		index := 0
+		if idx, ok := data["output_index"].(float64); ok {
+			index = int(idx)
+		}
+
+		switch eventType {
+		case "response.output_item.added":
+			item, _ := data["item"].(map[string]interface{})
+			if !isToolCallItem(item) {
+				continue
+			}
+			state := &StreamToolCallState{}
+			if name, ok := item["name"].(string); ok {
+				state.Name = name
+			}
+			if args, ok := firstPresentToolArgument(item); ok && !IsMalformedToolArguments(args) {
+				if b, err := json.Marshal(args); err == nil {
+					state.Arguments.Write(b)
+				}
+			}
+			t.active[index] = state
+		case "response.function_call_arguments.delta":
+			state := t.active[index]
+			if state == nil {
+				state = &StreamToolCallState{}
+				t.active[index] = state
+			}
+			if delta, ok := data["delta"].(string); ok {
+				state.Arguments.WriteString(delta)
+			}
+		case "response.function_call_arguments.done":
+			state := t.active[index]
+			if state == nil {
+				state = &StreamToolCallState{}
+				t.active[index] = state
+			}
+			if args, ok := data["arguments"]; ok {
+				state.Arguments.Reset()
+				writeToolArgument(&state.Arguments, args)
+			}
+			if item, ok := data["item"].(map[string]interface{}); ok {
+				if name, ok := item["name"].(string); ok && name != "" {
+					state.Name = name
+				}
+			}
+		case "response.output_item.done":
+			item, _ := data["item"].(map[string]interface{})
+			if !isToolCallItem(item) {
+				continue
+			}
+			state := t.active[index]
+			if state == nil {
+				state = &StreamToolCallState{}
+			}
+			if name, ok := item["name"].(string); ok && name != "" {
+				state.Name = name
+			}
+			if args, ok := firstPresentToolArgument(item); ok {
+				state.Arguments.Reset()
+				writeToolArgument(&state.Arguments, args)
+			}
+			delete(t.active, index)
+			if isMalformedResponsesToolCall(item, state.Arguments.String()) {
+				return true, fallbackToolName(state.Name, index)
+			}
+		case "response.completed":
+			if response, ok := data["response"].(map[string]interface{}); ok {
+				if output, ok := response["output"].([]interface{}); ok {
+					for i, raw := range output {
+						item, ok := raw.(map[string]interface{})
+						if !ok || !isToolCallItem(item) {
+							continue
+						}
+						args, _ := firstPresentToolArgument(item)
+						if isMalformedResponsesToolCall(item, args) {
+							name, _ := item["name"].(string)
+							return true, fallbackToolName(name, i)
+						}
+					}
+				}
+			}
+		}
+	}
+	return false, ""
+}
+
+func isToolCallItem(item map[string]interface{}) bool {
+	if item == nil {
+		return false
+	}
+	itemType, _ := item["type"].(string)
+	return itemType == "function_call" || itemType == "custom_tool_call" || strings.HasSuffix(itemType, "_call")
+}
+
+func isMalformedResponsesToolCall(item map[string]interface{}, args interface{}) bool {
+	itemType, _ := item["type"].(string)
+	name, _ := item["name"].(string)
+	if itemType == "custom_tool_call" {
+		switch v := args.(type) {
+		case nil:
+			return true
+		case string:
+			return strings.TrimSpace(v) == ""
+		case map[string]interface{}:
+			return len(v) == 0
+		case []interface{}:
+			return len(v) == 0
+		default:
+			return false
+		}
+	}
+	return isMalformedNamedToolArguments(name, args)
+}
+
+func firstPresentToolArgument(item map[string]interface{}) (interface{}, bool) {
+	for _, key := range []string{"arguments", "input", "args"} {
+		if v, ok := item[key]; ok {
+			return v, true
+		}
+	}
+	return nil, false
+}
+
+func writeToolArgument(builder *strings.Builder, args interface{}) {
+	if s, ok := args.(string); ok {
+		builder.WriteString(s)
+		return
+	}
+	if b, err := json.Marshal(args); err == nil {
+		builder.Write(b)
+	}
+}
+
+func fallbackToolName(name string, index int) string {
+	if name != "" {
+		return name
+	}
+	return fmt.Sprintf("tool_%d", index)
 }
 
 func isUsageOnlySSEEvent(event string) bool {

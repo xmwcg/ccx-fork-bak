@@ -1,3 +1,10 @@
+## [Unreleased]
+
+### 修复
+
+- **空/畸形 Tool Call 自动重试** - 在 Fuzzy 模式下将空参数或非法 JSON 的 tool/function call 视为空响应并复用现有 failover，降低上游偶发 `Read({})` 等畸形工具调用对下游客户端的影响
+  - 影响模块：Messages/Chat/Responses/Gemini 的非流式空响应判定、Messages/Responses 流式预检、Chat 流式写头前缓冲预检
+
 ## [v2.7.4] - 2026-05-18
 
 ### 修复

@@ -603,7 +603,7 @@ func handleSuccess(
 	defer resp.Body.Close()
 
 	if isStream {
-		return handleStreamSuccess(c, resp, upstreamType, envCfg, startTime, model), nil
+		return handleStreamSuccess(c, resp, upstreamType, envCfg, startTime, model)
 	}
 
 	// 非流式响应处理
@@ -796,7 +796,22 @@ func handleStreamSuccess(
 	envCfg *config.EnvConfig,
 	startTime time.Time,
 	model string,
-) *types.Usage {
+) (*types.Usage, error) {
+	var totalUsage *types.Usage
+	logBuffer := common.NewLimitedLogBuffer(common.MaxUpstreamResponseLogBytes)
+	streamLoggingEnabled := envCfg.EnableResponseLogs && envCfg.IsDevelopment()
+
+	common.LogUpstreamResponseHeaders(resp, envCfg, "Chat")
+
+	preflight, err := preflightChatStream(resp, upstreamType)
+	if err != nil {
+		return nil, err
+	}
+	if preflight.malformedToolName != "" {
+		log.Printf("[Chat-EmptyResponse] 上游返回空或畸形 tool_call（流式，upstreamType=%s, tool=%s），触发 failover", upstreamType, preflight.malformedToolName)
+		return nil, common.ErrEmptyStreamResponse
+	}
+
 	// 设置 SSE 响应头
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
@@ -808,18 +823,12 @@ func handleStreamSuccess(
 		log.Printf("[Chat-Stream] 警告: ResponseWriter 不支持 Flusher")
 	}
 
-	var totalUsage *types.Usage
-	logBuffer := common.NewLimitedLogBuffer(common.MaxUpstreamResponseLogBytes)
-	streamLoggingEnabled := envCfg.EnableResponseLogs && envCfg.IsDevelopment()
-
-	common.LogUpstreamResponseHeaders(resp, envCfg, "Chat")
-
 	switch upstreamType {
 	case "claude":
-		totalUsage = streamClaudeToChat(c, resp, flusher, model, logBuffer, streamLoggingEnabled)
+		totalUsage = streamClaudeToChat(c, resp, flusher, model, logBuffer, streamLoggingEnabled, preflight.buffered)
 	default:
 		// OpenAI / Gemini / Responses 等：直接透传 SSE 流
-		totalUsage = streamPassthrough(c, resp, flusher, logBuffer, streamLoggingEnabled)
+		totalUsage = streamPassthrough(c, resp, flusher, logBuffer, streamLoggingEnabled, preflight.buffered)
 	}
 
 	if envCfg.EnableResponseLogs {
@@ -830,7 +839,236 @@ func handleStreamSuccess(
 		}
 	}
 
-	return totalUsage
+	return totalUsage, nil
+}
+
+type chatStreamPreflight struct {
+	buffered          []byte
+	malformedToolName string
+}
+
+type chatToolTracker interface {
+	HasPendingToolCall() bool
+	ProcessClaudeEvent(string) (bool, string)
+	ProcessResponsesEvent(string) (bool, string)
+}
+
+func preflightChatStream(resp *http.Response, upstreamType string) (*chatStreamPreflight, error) {
+	result := &chatStreamPreflight{}
+	tracker := common.NewStreamToolCallTracker()
+	chatTracker := newOpenAIChatToolCallTracker()
+	buf := make([]byte, 32*1024)
+	var remainder string
+	const maxPreflightBytes = 1024 * 1024
+
+	flushRemainder := func() {
+		if remainder != "" {
+			result.buffered = append(result.buffered, []byte(remainder)...)
+			remainder = ""
+		}
+	}
+
+	for result.malformedToolName == "" && len(result.buffered) < maxPreflightBytes {
+		n, err := resp.Body.Read(buf)
+		if n > 0 {
+			chunk := buf[:n]
+			result.buffered = append(result.buffered, chunk...)
+			data := remainder + string(chunk)
+			lines := strings.Split(data, "\n")
+			remainder = lines[len(lines)-1]
+			completeLines := lines[:len(lines)-1]
+			if malformed, name := detectMalformedChatStreamLines(completeLines, upstreamType, tracker, chatTracker); malformed {
+				result.malformedToolName = name
+				flushRemainder()
+				break
+			}
+			if chatStreamHasTextContent(completeLines, upstreamType) && !tracker.HasPendingToolCall() && !chatTracker.HasPendingToolCall() {
+				flushRemainder()
+				break
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return result, err
+		}
+	}
+
+	flushRemainder()
+	return result, nil
+}
+
+func detectMalformedChatStreamLines(lines []string, upstreamType string, tracker chatToolTracker, chatTracker *openAIChatToolCallTracker) (bool, string) {
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		jsonData := strings.TrimPrefix(line, "data: ")
+		if jsonData == "[DONE]" {
+			continue
+		}
+		event := "data: " + jsonData + "\n\n"
+		switch upstreamType {
+		case "claude":
+			if malformed, name := tracker.ProcessClaudeEvent(event); malformed {
+				return true, name
+			}
+		case "responses":
+			if malformed, name := tracker.ProcessResponsesEvent(event); malformed {
+				return true, name
+			}
+		default:
+			if malformed, name := chatTracker.ProcessLine(jsonData); malformed {
+				return true, name
+			}
+		}
+	}
+	return false, ""
+}
+
+type openAIChatToolCallTracker struct {
+	active map[int]*strings.Builder
+	names  map[int]string
+}
+
+func newOpenAIChatToolCallTracker() *openAIChatToolCallTracker {
+	return &openAIChatToolCallTracker{
+		active: make(map[int]*strings.Builder),
+		names:  make(map[int]string),
+	}
+}
+
+func (t *openAIChatToolCallTracker) HasPendingToolCall() bool {
+	return len(t.active) > 0
+}
+
+func (t *openAIChatToolCallTracker) ProcessLine(jsonData string) (bool, string) {
+	var data map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonData), &data); err != nil {
+		return false, ""
+	}
+
+	choices, _ := data["choices"].([]interface{})
+	for _, rawChoice := range choices {
+		choice, _ := rawChoice.(map[string]interface{})
+		if finish, _ := choice["finish_reason"].(string); finish == "tool_calls" || finish == "function_call" {
+			if finish == "function_call" {
+				if builder := t.active[0]; builder != nil && common.IsMalformedToolArguments(builder.String()) && t.toolRequiresArguments(0) {
+					return true, fallbackChatToolName(t.names[0], 0)
+				}
+			} else {
+				for idx, builder := range t.active {
+					if common.IsMalformedToolArguments(builder.String()) && t.toolRequiresArguments(idx) {
+						return true, fallbackChatToolName(t.names[idx], idx)
+					}
+				}
+			}
+			t.active = make(map[int]*strings.Builder)
+			t.names = make(map[int]string)
+			continue
+		}
+
+		delta, _ := choice["delta"].(map[string]interface{})
+		if functionCall, ok := delta["function_call"].(map[string]interface{}); ok {
+			builder := t.ensure(0)
+			if name, ok := functionCall["name"].(string); ok && name != "" {
+				t.names[0] = name
+			}
+			if args, ok := functionCall["arguments"].(string); ok {
+				builder.WriteString(args)
+			}
+		}
+		if calls, ok := delta["tool_calls"].([]interface{}); ok {
+			for _, rawCall := range calls {
+				call, _ := rawCall.(map[string]interface{})
+				idx := 0
+				if fidx, ok := call["index"].(float64); ok {
+					idx = int(fidx)
+				}
+				builder := t.ensure(idx)
+				function, _ := call["function"].(map[string]interface{})
+				if name, ok := function["name"].(string); ok && name != "" {
+					t.names[idx] = name
+				}
+				if args, ok := function["arguments"].(string); ok {
+					builder.WriteString(args)
+				}
+			}
+		}
+	}
+	return false, ""
+}
+
+func (t *openAIChatToolCallTracker) ensure(index int) *strings.Builder {
+	builder := t.active[index]
+	if builder == nil {
+		builder = &strings.Builder{}
+		t.active[index] = builder
+	}
+	return builder
+}
+
+func (t *openAIChatToolCallTracker) toolRequiresArguments(index int) bool {
+	name := strings.ToLower(strings.TrimSpace(t.names[index]))
+	switch name {
+	case "read", "edit", "write", "bash", "grep", "glob", "webfetch", "websearch":
+		return true
+	default:
+		return false
+	}
+}
+
+func fallbackChatToolName(name string, index int) string {
+	if name != "" {
+		return name
+	}
+	return fmt.Sprintf("tool_%d", index)
+}
+
+func chatStreamHasTextContent(lines []string, upstreamType string) bool {
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		jsonData := strings.TrimPrefix(line, "data: ")
+		if jsonData == "[DONE]" {
+			continue
+		}
+		var data map[string]interface{}
+		if err := json.Unmarshal([]byte(jsonData), &data); err != nil {
+			continue
+		}
+		if upstreamType == "claude" {
+			if eventType, _ := data["type"].(string); eventType == "content_block_delta" {
+				delta, _ := data["delta"].(map[string]interface{})
+				if text, _ := delta["text"].(string); !common.IsEffectivelyEmptyStreamText(text) {
+					return true
+				}
+			}
+			continue
+		}
+		if upstreamType == "responses" {
+			if eventType, _ := data["type"].(string); eventType == "response.output_text.delta" {
+				if text, _ := data["delta"].(string); !common.IsEffectivelyEmptyStreamText(text) {
+					return true
+				}
+			}
+			continue
+		}
+		choices, _ := data["choices"].([]interface{})
+		for _, rawChoice := range choices {
+			choice, _ := rawChoice.(map[string]interface{})
+			delta, _ := choice["delta"].(map[string]interface{})
+			if content, _ := delta["content"].(string); !common.IsEffectivelyEmptyStreamText(content) {
+				return true
+			}
+			if reasoning, _ := delta["reasoning_content"].(string); !common.IsEffectivelyEmptyStreamText(reasoning) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // streamPassthrough 直接透传 SSE 流（用于 OpenAI 兼容上游）
@@ -840,19 +1078,33 @@ func streamPassthrough(
 	flusher http.Flusher,
 	logBuffer *common.LimitedLogBuffer,
 	loggingEnabled bool,
+	prefetched []byte,
 ) *types.Usage {
 	var totalUsage *types.Usage
 	buf := make([]byte, 32*1024)
 	var remainder string
+	pending := prefetched
 
 	for {
-		n, err := resp.Body.Read(buf)
-		if n > 0 {
+		var chunk []byte
+		var readErr error
+		if len(pending) > 0 {
+			chunk = pending
+			pending = nil
+		} else {
+			n, err := resp.Body.Read(buf)
+			readErr = err
+			if n > 0 {
+				chunk = buf[:n]
+			}
+		}
+
+		if len(chunk) > 0 {
 			if loggingEnabled {
-				logBuffer.Write(buf[:n])
+				logBuffer.Write(chunk)
 			}
 			// 使用行缓冲机制避免跨 chunk 截断
-			data := remainder + string(buf[:n])
+			data := remainder + string(chunk)
 			lines := strings.Split(data, "\n")
 			remainder = lines[len(lines)-1]
 			completeLines := lines[:len(lines)-1]
@@ -879,17 +1131,36 @@ func streamPassthrough(
 				}
 			}
 
-			c.Writer.Write(buf[:n])
+			c.Writer.Write(chunk)
 			if flusher != nil {
 				flusher.Flush()
 			}
 		}
-		if err != nil {
+		if readErr != nil {
+			if remainder != "" {
+				flushCompletePassthroughRemainder(c, flusher, remainder)
+				remainder = ""
+			}
 			break
 		}
 	}
 
 	return totalUsage
+}
+
+func flushCompletePassthroughRemainder(c *gin.Context, flusher http.Flusher, remainder string) {
+	trimmed := strings.TrimSpace(remainder)
+	if !strings.HasPrefix(trimmed, "data: ") {
+		return
+	}
+	jsonData := strings.TrimPrefix(trimmed, "data: ")
+	if jsonData != "[DONE]" && !json.Valid([]byte(jsonData)) {
+		return
+	}
+	fmt.Fprintf(c.Writer, "%s\n\n", trimmed)
+	if flusher != nil {
+		flusher.Flush()
+	}
 }
 
 // streamClaudeToChat Claude 流式响应转换为 OpenAI Chat 格式
@@ -900,159 +1171,50 @@ func streamClaudeToChat(
 	model string,
 	logBuffer *common.LimitedLogBuffer,
 	loggingEnabled bool,
+	prefetched []byte,
 ) *types.Usage {
 	var totalUsage *types.Usage
 	var doneSent bool
 	buf := make([]byte, 32*1024)
 	var remainder string
+	pending := prefetched
 
 	for {
-		n, readErr := resp.Body.Read(buf)
-		if n > 0 {
-			if loggingEnabled {
-				logBuffer.Write(buf[:n])
-			}
-			data := remainder + string(buf[:n])
-			lines := strings.Split(data, "\n")
-			// 最后一行可能不完整，保留到下次
-			remainder = lines[len(lines)-1]
-			lines = lines[:len(lines)-1]
-
-			for _, line := range lines {
-				if !strings.HasPrefix(line, "data: ") {
-					continue
-				}
-				jsonData := strings.TrimPrefix(line, "data: ")
-				if jsonData == "[DONE]" {
-					fmt.Fprintf(c.Writer, "data: [DONE]\n\n")
-					if flusher != nil {
-						flusher.Flush()
-					}
-					doneSent = true
-					continue
-				}
-
-				var event map[string]interface{}
-				if err := json.Unmarshal([]byte(jsonData), &event); err != nil {
-					continue
-				}
-
-				eventType, _ := event["type"].(string)
-
-				switch eventType {
-				case "content_block_delta":
-					delta, ok := event["delta"].(map[string]interface{})
-					if !ok {
-						continue
-					}
-					deltaType, _ := delta["type"].(string)
-					switch deltaType {
-					case "thinking_delta":
-						thinking, _ := delta["thinking"].(string)
-						if thinking == "" {
-							continue
-						}
-						chatChunk := map[string]interface{}{
-							"id":      "chatcmpl-claude",
-							"object":  "chat.completion.chunk",
-							"created": time.Now().Unix(),
-							"model":   model,
-							"choices": []map[string]interface{}{
-								{
-									"index": 0,
-									"delta": map[string]interface{}{
-										"reasoning_content": thinking,
-									},
-									"finish_reason": nil,
-								},
-							},
-						}
-						chunkBytes, _ := json.Marshal(chatChunk)
-						fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunkBytes))
-						if flusher != nil {
-							flusher.Flush()
-						}
-					case "text_delta":
-						text, _ := delta["text"].(string)
-						chatChunk := map[string]interface{}{
-							"id":      "chatcmpl-claude",
-							"object":  "chat.completion.chunk",
-							"created": time.Now().Unix(),
-							"model":   model,
-							"choices": []map[string]interface{}{
-								{
-									"index": 0,
-									"delta": map[string]interface{}{
-										"content": text,
-									},
-									"finish_reason": nil,
-								},
-							},
-						}
-						chunkBytes, _ := json.Marshal(chatChunk)
-						fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunkBytes))
-						if flusher != nil {
-							flusher.Flush()
-						}
-					}
-
-				case "message_delta":
-					// 消息完成
-					stopChunk := map[string]interface{}{
-						"id":      "chatcmpl-claude",
-						"object":  "chat.completion.chunk",
-						"created": time.Now().Unix(),
-						"model":   model,
-						"choices": []map[string]interface{}{
-							{
-								"index":         0,
-								"delta":         map[string]interface{}{},
-								"finish_reason": "stop",
-							},
-						},
-					}
-
-					// 提取 usage
-					if usage, ok := event["usage"].(map[string]interface{}); ok {
-						inputTokens, _ := usage["input_tokens"].(float64)
-						outputTokens, _ := usage["output_tokens"].(float64)
-						totalUsage = &types.Usage{
-							InputTokens:  int(inputTokens),
-							OutputTokens: int(outputTokens),
-						}
-						stopChunk["usage"] = map[string]interface{}{
-							"prompt_tokens":     int(inputTokens),
-							"completion_tokens": int(outputTokens),
-							"total_tokens":      int(inputTokens + outputTokens),
-						}
-					}
-
-					chunkBytes, _ := json.Marshal(stopChunk)
-					fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunkBytes))
-					if flusher != nil {
-						flusher.Flush()
-					}
-
-				case "message_start":
-					// 提取初始 usage（input_tokens）
-					if msg, ok := event["message"].(map[string]interface{}); ok {
-						if usage, ok := msg["usage"].(map[string]interface{}); ok {
-							inputTokens, _ := usage["input_tokens"].(float64)
-							totalUsage = &types.Usage{
-								InputTokens:  int(inputTokens),
-								OutputTokens: 0,
-							}
-						}
-					}
-				}
+		var chunk []byte
+		var readErr error
+		if len(pending) > 0 {
+			chunk = pending
+			pending = nil
+		} else {
+			n, err := resp.Body.Read(buf)
+			readErr = err
+			if n > 0 {
+				chunk = buf[:n]
 			}
 		}
+
+		if len(chunk) > 0 {
+			if loggingEnabled {
+				logBuffer.Write(chunk)
+			}
+			data := remainder + string(chunk)
+			lines := strings.Split(data, "\n")
+			remainder = lines[len(lines)-1]
+			lines = lines[:len(lines)-1]
+			for _, line := range lines {
+				processClaudeChatStreamLine(c, flusher, model, line, &totalUsage, &doneSent)
+			}
+		}
+
 		if readErr != nil {
+			if remainder != "" {
+				processClaudeChatStreamLine(c, flusher, model, remainder, &totalUsage, &doneSent)
+				remainder = ""
+			}
 			break
 		}
 	}
 
-	// 确保发送 [DONE]（仅在未发送过时）
 	if !doneSent {
 		fmt.Fprintf(c.Writer, "data: [DONE]\n\n")
 		if flusher != nil {
@@ -1061,6 +1223,115 @@ func streamClaudeToChat(
 	}
 
 	return totalUsage
+}
+
+func processClaudeChatStreamLine(c *gin.Context, flusher http.Flusher, model string, line string, totalUsage **types.Usage, doneSent *bool) {
+	if !strings.HasPrefix(line, "data: ") {
+		return
+	}
+	jsonData := strings.TrimPrefix(line, "data: ")
+	if jsonData == "[DONE]" {
+		fmt.Fprintf(c.Writer, "data: [DONE]\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+		*doneSent = true
+		return
+	}
+
+	var event map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonData), &event); err != nil {
+		return
+	}
+
+	eventType, _ := event["type"].(string)
+	switch eventType {
+	case "content_block_delta":
+		delta, ok := event["delta"].(map[string]interface{})
+		if !ok {
+			return
+		}
+		deltaType, _ := delta["type"].(string)
+		switch deltaType {
+		case "thinking_delta":
+			thinking, _ := delta["thinking"].(string)
+			if thinking == "" {
+				return
+			}
+			chatChunk := map[string]interface{}{
+				"id":      "chatcmpl-claude",
+				"object":  "chat.completion.chunk",
+				"created": time.Now().Unix(),
+				"model":   model,
+				"choices": []map[string]interface{}{{
+					"index": 0,
+					"delta": map[string]interface{}{
+						"reasoning_content": thinking,
+					},
+					"finish_reason": nil,
+				}},
+			}
+			chunkBytes, _ := json.Marshal(chatChunk)
+			fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunkBytes))
+			if flusher != nil {
+				flusher.Flush()
+			}
+		case "text_delta":
+			text, _ := delta["text"].(string)
+			chatChunk := map[string]interface{}{
+				"id":      "chatcmpl-claude",
+				"object":  "chat.completion.chunk",
+				"created": time.Now().Unix(),
+				"model":   model,
+				"choices": []map[string]interface{}{{
+					"index": 0,
+					"delta": map[string]interface{}{
+						"content": text,
+					},
+					"finish_reason": nil,
+				}},
+			}
+			chunkBytes, _ := json.Marshal(chatChunk)
+			fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunkBytes))
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	case "message_delta":
+		stopChunk := map[string]interface{}{
+			"id":      "chatcmpl-claude",
+			"object":  "chat.completion.chunk",
+			"created": time.Now().Unix(),
+			"model":   model,
+			"choices": []map[string]interface{}{{
+				"index":         0,
+				"delta":         map[string]interface{}{},
+				"finish_reason": "stop",
+			}},
+		}
+		if usage, ok := event["usage"].(map[string]interface{}); ok {
+			inputTokens, _ := usage["input_tokens"].(float64)
+			outputTokens, _ := usage["output_tokens"].(float64)
+			*totalUsage = &types.Usage{InputTokens: int(inputTokens), OutputTokens: int(outputTokens)}
+			stopChunk["usage"] = map[string]interface{}{
+				"prompt_tokens":     int(inputTokens),
+				"completion_tokens": int(outputTokens),
+				"total_tokens":      int(inputTokens + outputTokens),
+			}
+		}
+		chunkBytes, _ := json.Marshal(stopChunk)
+		fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunkBytes))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	case "message_start":
+		if msg, ok := event["message"].(map[string]interface{}); ok {
+			if usage, ok := msg["usage"].(map[string]interface{}); ok {
+				inputTokens, _ := usage["input_tokens"].(float64)
+				*totalUsage = &types.Usage{InputTokens: int(inputTokens), OutputTokens: 0}
+			}
+		}
+	}
 }
 
 // chatErrorResponse 返回 OpenAI 格式的错误响应

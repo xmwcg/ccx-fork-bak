@@ -620,6 +620,7 @@ func handleStreamSuccess(
 
 	var bufferedLines []string
 	var preflightTextBuf bytes.Buffer
+	preflightToolTracker := common.NewStreamToolCallTracker()
 	preflightHasNonTextContent := false
 	preflightEmpty := false
 	preflightDiagnostic := ""
@@ -695,6 +696,12 @@ func handleStreamSuccess(
 
 			for _, event := range eventsToCheck {
 				seenConvertedEvent = true
+				if malformed, name := preflightToolTracker.ProcessResponsesEvent(event); malformed {
+					preflightEmpty = true
+					preflightDiagnostic = fmt.Sprintf("malformed tool call: %s", name)
+					preflightDone = true
+					break
+				}
 				seenCompletedEvent = seenCompletedEvent || isResponsesCompletedEvent(event)
 				seenUsageOnlyEvent = seenUsageOnlyEvent || isResponsesUsageOnlyEvent(event)
 				if t, ok := firstUnknownResponsesEventType(event); ok {
@@ -704,7 +711,7 @@ func handleStreamSuccess(
 					}
 				}
 
-				if !preflightHasNonTextContent && common.HasResponsesSemanticContent(event) {
+				if !preflightHasNonTextContent && common.HasResponsesSemanticContent(event) && !preflightToolTracker.HasPendingToolCall() {
 					preflightHasNonTextContent = true
 					preflightEmpty = false
 					preflightDone = true

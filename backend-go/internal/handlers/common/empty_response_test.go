@@ -17,12 +17,22 @@ func TestIsClaudeResponseEmpty(t *testing.T) {
 		{"single empty text", &types.ClaudeResponse{Content: []types.ClaudeContent{{Type: "text", Text: ""}}}, true},
 		{"single brace text", &types.ClaudeResponse{Content: []types.ClaudeContent{{Type: "text", Text: "{"}}}, true},
 		{"single text with content", &types.ClaudeResponse{Content: []types.ClaudeContent{{Type: "text", Text: "hello"}}}, false},
-		{"tool_use only", &types.ClaudeResponse{Content: []types.ClaudeContent{{Type: "tool_use", Name: "x"}}}, false},
+		{"zero-arg tool_use only", &types.ClaudeResponse{Content: []types.ClaudeContent{{Type: "tool_use", Name: "x"}}}, false},
+		{"empty required tool_use only", &types.ClaudeResponse{Content: []types.ClaudeContent{{Type: "tool_use", Name: "Read"}}}, true},
+		{"valid tool_use only", &types.ClaudeResponse{Content: []types.ClaudeContent{{Type: "tool_use", Name: "x", Input: map[string]interface{}{"path": "."}}}}, false},
 		{"thinking only", &types.ClaudeResponse{Content: []types.ClaudeContent{{Type: "thinking", Thinking: "..."}}}, false},
 		{"image block", &types.ClaudeResponse{Content: []types.ClaudeContent{{Type: "image"}}}, false},
-		{"mixed empty text + tool_use", &types.ClaudeResponse{Content: []types.ClaudeContent{
+		{"mixed empty text + zero-arg tool_use", &types.ClaudeResponse{Content: []types.ClaudeContent{
 			{Type: "text", Text: ""},
 			{Type: "tool_use", Name: "x"},
+		}}, false},
+		{"mixed empty text + empty required tool_use", &types.ClaudeResponse{Content: []types.ClaudeContent{
+			{Type: "text", Text: ""},
+			{Type: "tool_use", Name: "Read"},
+		}}, true},
+		{"mixed empty text + valid tool_use", &types.ClaudeResponse{Content: []types.ClaudeContent{
+			{Type: "text", Text: ""},
+			{Type: "tool_use", Name: "x", Input: map[string]interface{}{"path": "."}},
 		}}, false},
 	}
 	for _, tt := range tests {
@@ -58,12 +68,36 @@ func TestIsChatResponseEmpty(t *testing.T) {
 				map[string]interface{}{"message": map[string]interface{}{"role": "assistant", "content": "hi"}},
 			},
 		}, false},
-		{"tool_calls", map[string]interface{}{
+		{"empty zero-arg tool_calls", map[string]interface{}{
 			"choices": []interface{}{
 				map[string]interface{}{"message": map[string]interface{}{
 					"role":       "assistant",
 					"content":    nil,
-					"tool_calls": []interface{}{map[string]interface{}{"id": "1"}},
+					"tool_calls": []interface{}{map[string]interface{}{"id": "1", "function": map[string]interface{}{"name": "noop", "arguments": `{}`}}},
+				}},
+			},
+		}, false},
+		{"empty required tool_calls", map[string]interface{}{
+			"choices": []interface{}{
+				map[string]interface{}{"message": map[string]interface{}{
+					"role":       "assistant",
+					"content":    nil,
+					"tool_calls": []interface{}{map[string]interface{}{"id": "1", "function": map[string]interface{}{"name": "Read", "arguments": `{}`}}},
+				}},
+			},
+		}, true},
+		{"valid tool_calls", map[string]interface{}{
+			"choices": []interface{}{
+				map[string]interface{}{"message": map[string]interface{}{
+					"role":    "assistant",
+					"content": nil,
+					"tool_calls": []interface{}{map[string]interface{}{
+						"id": "1",
+						"function": map[string]interface{}{
+							"name":      "Read",
+							"arguments": `{"file_path":"README.md"}`,
+						},
+					}},
 				}},
 			},
 		}, false},
@@ -129,14 +163,23 @@ func TestIsResponsesResponseEmpty(t *testing.T) {
 		{"message with text", &types.ResponsesResponse{Output: []types.ResponsesItem{
 			{Type: "message", Content: "hi"},
 		}}, false},
-		{"function_call", &types.ResponsesResponse{Output: []types.ResponsesItem{
-			{Type: "function_call", Name: "tool"},
+		{"empty zero-arg function_call", &types.ResponsesResponse{Output: []types.ResponsesItem{
+			{Type: "function_call", Name: "tool", Arguments: `{}`},
+		}}, false},
+		{"empty required function_call", &types.ResponsesResponse{Output: []types.ResponsesItem{
+			{Type: "function_call", Name: "Read", Arguments: `{}`},
+		}}, true},
+		{"valid function_call", &types.ResponsesResponse{Output: []types.ResponsesItem{
+			{Type: "function_call", Name: "tool", Arguments: `{"path":"."}`},
 		}}, false},
 		{"reasoning", &types.ResponsesResponse{Output: []types.ResponsesItem{
 			{Type: "reasoning", Summary: "thought"},
 		}}, false},
-		{"custom_tool_call (suffix _call)", &types.ResponsesResponse{Output: []types.ResponsesItem{
+		{"empty custom_tool_call (suffix _call)", &types.ResponsesResponse{Output: []types.ResponsesItem{
 			{Type: "custom_tool_call", Name: "x"},
+		}}, true},
+		{"valid custom_tool_call (suffix _call)", &types.ResponsesResponse{Output: []types.ResponsesItem{
+			{Type: "custom_tool_call", Name: "x", Input: "payload"},
 		}}, false},
 		{"message with content blocks text", &types.ResponsesResponse{Output: []types.ResponsesItem{
 			{Type: "message", Content: []types.ContentBlock{{Type: "output_text", Text: "ok"}}},
@@ -179,8 +222,14 @@ func TestIsGeminiResponseEmpty(t *testing.T) {
 		{"candidate with text", &types.GeminiResponse{Candidates: []types.GeminiCandidate{
 			{Content: &types.GeminiContent{Parts: []types.GeminiPart{{Text: "hello"}}}},
 		}}, false},
-		{"candidate with functionCall", &types.GeminiResponse{Candidates: []types.GeminiCandidate{
+		{"candidate with zero-arg functionCall", &types.GeminiResponse{Candidates: []types.GeminiCandidate{
 			{Content: &types.GeminiContent{Parts: []types.GeminiPart{{FunctionCall: &types.GeminiFunctionCall{Name: "f"}}}}},
+		}}, false},
+		{"candidate with empty required functionCall", &types.GeminiResponse{Candidates: []types.GeminiCandidate{
+			{Content: &types.GeminiContent{Parts: []types.GeminiPart{{FunctionCall: &types.GeminiFunctionCall{Name: "Read"}}}}},
+		}}, true},
+		{"candidate with functionCall", &types.GeminiResponse{Candidates: []types.GeminiCandidate{
+			{Content: &types.GeminiContent{Parts: []types.GeminiPart{{FunctionCall: &types.GeminiFunctionCall{Name: "f", Args: map[string]interface{}{"path": "."}}}}}},
 		}}, false},
 		{"safety blocked candidate is preserved (not failover)", &types.GeminiResponse{Candidates: []types.GeminiCandidate{
 			{FinishReason: "SAFETY"},
