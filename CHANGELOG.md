@@ -1,3 +1,12 @@
+## [Unreleased]
+
+### 新增
+
+- **CCX 桌面外壳 MVP** - 新增 Wails3 桌面外壳，用于将现有 CCX 后端作为核心服务构件进行启动、停止、重启、托盘驻留和状态监控；外壳通过现有 `/health` 探活并在内置标签页中加载 CCX Web UI，避免改动核心代理、调度和现有 Web 管理界面逻辑。
+  - 新增 `desktop/` Wails3 项目，包含后端子进程 supervisor、托盘菜单、状态页、内嵌 Web UI 标签页和前端绑定。
+  - 根 `Makefile` 新增 `desktop-dev` / `desktop-build`，复用现有前端 embed 与 Go 后端构建流程。
+  - 调整 `.gitignore`，保留 Wails `desktop/build/` 源配置，同时继续忽略桌面构建产物。
+
 ## [v2.7.4] - 2026-05-18
 
 ### 修复

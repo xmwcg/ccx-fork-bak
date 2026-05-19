@@ -183,6 +183,8 @@ node_modules
 .netlify
 .svelte-kit
 build
+!desktop/build/
+!desktop/build/**
 
 # OS
 .DS_Store
