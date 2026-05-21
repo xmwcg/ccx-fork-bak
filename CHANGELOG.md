@@ -1,3 +1,9 @@
+## [v2.7.12] - 2026-05-22
+
+### 修复
+
+- **Windows Release 构建 NSIS makensis 不在 PATH** - 修复 CI 中 Windows Release 构建时 NSIS `makensis` 工具不在 PATH 导致构建失败的问题
+
 ## [v2.7.11] - 2026-05-22
 
 ### 新增
